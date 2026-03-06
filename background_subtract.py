@@ -16,24 +16,36 @@ Usage:
 """
 
 import argparse
+import json
+import os
 import sys
 import cv2
 import numpy as np
 from tqdm import tqdm
 
-# Fixed moon position (must match register_frames.py)
-MOON_CX = 960
-MOON_CY = 540
-MOON_RADIUS = 426
-# Erode inward to avoid limb artifacts (~5% of radius)
-MASK_RADIUS = int(MOON_RADIUS * 0.95)
+MASK_EROSION = 0.95  # erode inward to avoid limb artefacts
 
 
-def build_disk_mask(height: int, width: int) -> np.ndarray:
+def load_geometry(video_path: str) -> tuple[int, int, int]:
+    """Load moon geometry from the sidecar JSON written by register_frames.py."""
+    sidecar = os.path.splitext(video_path)[0] + ".json"
+    if not os.path.exists(sidecar):
+        sys.exit(
+            f"Geometry sidecar not found: {sidecar}\n"
+            f"Run register_frames.py first to generate it, or pass "
+            f"--moon-cx, --moon-cy, --moon-radius manually."
+        )
+    with open(sidecar) as f:
+        geo = json.load(f)
+    return int(geo["moon_cx"]), int(geo["moon_cy"]), int(geo["moon_radius"])
+
+
+def build_disk_mask(height: int, width: int,
+                    moon_cx: int, moon_cy: int, mask_radius: int) -> np.ndarray:
     """Boolean mask — True inside the analysis region of the lunar disk."""
     Y, X = np.ogrid[:height, :width]
-    dist = np.sqrt((X - MOON_CX) ** 2 + (Y - MOON_CY) ** 2)
-    return dist <= MASK_RADIUS
+    dist = np.sqrt((X - moon_cx) ** 2 + (Y - moon_cy) ** 2)
+    return dist <= mask_radius
 
 
 def load_frames(cap: cv2.VideoCapture, start_frame: int, n_frames: int):
@@ -57,7 +69,8 @@ def load_frames(cap: cv2.VideoCapture, start_frame: int, n_frames: int):
     return gray_array, color_frames
 
 
-def make_residual_display(residual: np.ndarray, mask: np.ndarray) -> np.ndarray:
+def make_residual_display(residual: np.ndarray, mask: np.ndarray,
+                          moon_cx: int, moon_cy: int, mask_radius: int) -> np.ndarray:
     """
     Convert a signed float residual into a displayable uint8 image.
     Positive residuals (brighter than background) → warm colours.
@@ -72,7 +85,7 @@ def make_residual_display(residual: np.ndarray, mask: np.ndarray) -> np.ndarray:
     bgr[outside] = (bgr[outside] * 0.3).astype(np.uint8)
 
     # Draw the mask boundary
-    cv2.circle(bgr, (MOON_CX, MOON_CY), MASK_RADIUS, (0, 200, 0), 1)
+    cv2.circle(bgr, (moon_cx, moon_cy), mask_radius, (0, 200, 0), 1)
 
     return bgr
 
@@ -83,7 +96,17 @@ def process(
     start_sec: float,
     end_sec: float,
     half_window: int,
+    moon_cx: int | None = None,
+    moon_cy: int | None = None,
+    moon_radius: int | None = None,
 ) -> None:
+    # Resolve moon geometry
+    if moon_cx is None or moon_cy is None or moon_radius is None:
+        moon_cx, moon_cy, moon_radius = load_geometry(input_path)
+    mask_radius = int(moon_radius * MASK_EROSION)
+    print(f"Moon geometry: center=({moon_cx}, {moon_cy}), "
+          f"radius={moon_radius}, mask_radius={mask_radius}")
+
     cap = cv2.VideoCapture(input_path)
     if not cap.isOpened():
         sys.exit(f"Cannot open: {input_path}")
@@ -108,7 +131,7 @@ def process(
     cap.release()
 
     n_frames = len(color_frames)  # actual frames read
-    mask = build_disk_mask(height, width)
+    mask = build_disk_mask(height, width, moon_cx, moon_cy, mask_radius)
 
     fourcc = cv2.VideoWriter_fourcc(*"mp4v")
     writer = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
@@ -135,7 +158,7 @@ def process(
         residual_peaks.append(peak)
 
         # Full-resolution residual visualisation
-        out_frame = make_residual_display(residual, mask)
+        out_frame = make_residual_display(residual, mask, moon_cx, moon_cy, mask_radius)
 
         frame_idx = start_frame + t
         ts = frame_idx / fps
@@ -164,9 +187,16 @@ def main():
     parser.add_argument("--end", type=float, default=-1.0)
     parser.add_argument("--half-window", type=int, default=15,
                         help="Frames each side of current for median (default 15 = ±0.5s)")
+    parser.add_argument("--moon-cx",     type=int, default=None,
+                        help="Override moon center X (auto-loaded from sidecar if omitted)")
+    parser.add_argument("--moon-cy",     type=int, default=None,
+                        help="Override moon center Y")
+    parser.add_argument("--moon-radius", type=int, default=None,
+                        help="Override moon radius")
     args = parser.parse_args()
 
-    process(args.input, args.output, args.start, args.end, args.half_window)
+    process(args.input, args.output, args.start, args.end, args.half_window,
+            moon_cx=args.moon_cx, moon_cy=args.moon_cy, moon_radius=args.moon_radius)
 
 
 if __name__ == "__main__":

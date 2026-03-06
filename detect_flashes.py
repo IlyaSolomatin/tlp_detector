@@ -16,6 +16,7 @@ Usage:
 
 import argparse
 import json
+import os
 import sys
 from collections import deque
 import cv2
@@ -23,11 +24,21 @@ import numpy as np
 from tqdm import tqdm
 from dataclasses import dataclass, asdict
 
-# ── Moon geometry (must match register_frames.py) ──────────────────────────
-MOON_CX = 960
-MOON_CY = 540
-MOON_RADIUS = 426
-MASK_RADIUS = int(MOON_RADIUS * 0.95)   # eroded inward to avoid limb artefacts
+MASK_EROSION = 0.95  # erode inward to avoid limb artefacts
+
+
+def load_geometry(video_path: str) -> tuple[int, int, int]:
+    """Load moon geometry from the sidecar JSON written by register_frames.py."""
+    sidecar = os.path.splitext(video_path)[0] + ".json"
+    if not os.path.exists(sidecar):
+        sys.exit(
+            f"Geometry sidecar not found: {sidecar}\n"
+            f"Run register_frames.py first to generate it, or pass "
+            f"--moon-cx, --moon-cy, --moon-radius manually."
+        )
+    with open(sidecar) as f:
+        geo = json.load(f)
+    return int(geo["moon_cx"]), int(geo["moon_cy"]), int(geo["moon_radius"])
 
 # ── Detection defaults ──────────────────────────────────────────────────────
 DEFAULT_HALF_WINDOW  = 15    # frames each side for temporal median
@@ -61,9 +72,10 @@ class Event:
     detections: list   # list of Detection dicts
 
 
-def build_disk_mask(height: int, width: int) -> np.ndarray:
+def build_disk_mask(height: int, width: int,
+                    moon_cx: int, moon_cy: int, mask_radius: int) -> np.ndarray:
     Y, X = np.ogrid[:height, :width]
-    return (X - MOON_CX) ** 2 + (Y - MOON_CY) ** 2 <= MASK_RADIUS ** 2
+    return (X - moon_cx) ** 2 + (Y - moon_cy) ** 2 <= mask_radius ** 2
 
 
 def robust_sigma(residual: np.ndarray, mask: np.ndarray) -> float:
@@ -222,7 +234,17 @@ def process(
     min_frames: int,
     max_frames: int,
     link_radius: float,
+    moon_cx: int | None = None,
+    moon_cy: int | None = None,
+    moon_radius: int | None = None,
 ) -> list[Event]:
+    # Resolve moon geometry
+    if moon_cx is None or moon_cy is None or moon_radius is None:
+        moon_cx, moon_cy, moon_radius = load_geometry(input_path)
+    mask_radius = int(moon_radius * MASK_EROSION)
+    print(f"Moon geometry: center=({moon_cx}, {moon_cy}), "
+          f"radius={moon_radius}, mask_radius={mask_radius}")
+
     cap = cv2.VideoCapture(input_path)
     if not cap.isOpened():
         sys.exit(f"Cannot open: {input_path}")
@@ -244,7 +266,7 @@ def process(
           f"size: [{min_area}, {max_area}]px  |  "
           f"duration: [{min_frames}, {max_frames}] frames")
 
-    mask = build_disk_mask(height, width)
+    mask = build_disk_mask(height, width, moon_cx, moon_cy, mask_radius)
 
     # ── Pass 1: sliding-window detection  (grayscale only, bounded memory) ─
     # Buffer holds at most 2*W+1 grayscale frames at any time.
@@ -332,14 +354,15 @@ def process(
         ts  = fi / fps
         out = frame
 
-        cv2.circle(out, (MOON_CX, MOON_CY), MASK_RADIUS, (40, 40, 40), 1)
+        cv2.circle(out, (moon_cx, moon_cy), mask_radius, (40, 40, 40), 1)
 
         if fi in frame_events:
+            marker_r = max(5, moon_radius // 21)   # ~20 px at radius 426
             for ev in frame_events[fi]:
                 cx, cy = int(ev.cx), int(ev.cy)
-                cv2.circle(out, (cx, cy), 20, (0, 0, 255), 2)
+                cv2.circle(out, (cx, cy), marker_r, (0, 0, 255), 2)
                 label = f"#{ev.event_id} SNR={ev.peak_snr:.1f}"
-                cv2.putText(out, label, (cx + 24, cy - 8),
+                cv2.putText(out, label, (cx + marker_r + 4, cy - 8),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
 
         cv2.putText(out, f"t={ts:.2f}s  k={sigma_k}",
@@ -357,8 +380,8 @@ def process(
             **asdict(ev),
             "start_time_s": ev.start_frame / fps,
             "end_time_s":   ev.end_frame   / fps,
-            "lunar_x": ev.cx - MOON_CX,
-            "lunar_y": ev.cy - MOON_CY,
+            "lunar_x": ev.cx - moon_cx,
+            "lunar_y": ev.cy - moon_cy,
         })
     with open(events_path, "w") as f:
         json.dump(events_data, f, indent=2)
@@ -371,8 +394,8 @@ def process(
         for ev in events:
             t0 = ev.start_frame / fps
             t1 = ev.end_frame   / fps
-            lx = ev.cx - MOON_CX
-            ly = ev.cy - MOON_CY
+            lx = ev.cx - moon_cx
+            ly = ev.cy - moon_cy
             print(f"{ev.event_id:>3}  "
                   f"{ev.start_frame:>5}–{ev.end_frame:<5}  "
                   f"{t0:>5.2f}–{t1:<5.2f}  "
@@ -406,6 +429,12 @@ def main():
                         help="Min consecutive frames for a valid event (default 2)")
     parser.add_argument("--max-frames",  type=int,   default=DEFAULT_MAX_FRAMES)
     parser.add_argument("--link-radius", type=float, default=DEFAULT_LINK_RADIUS)
+    parser.add_argument("--moon-cx",     type=int, default=None,
+                        help="Override moon center X (auto-loaded from sidecar if omitted)")
+    parser.add_argument("--moon-cy",     type=int, default=None,
+                        help="Override moon center Y")
+    parser.add_argument("--moon-radius", type=int, default=None,
+                        help="Override moon radius")
     args = parser.parse_args()
 
     process(
@@ -422,6 +451,9 @@ def main():
         min_frames=args.min_frames,
         max_frames=args.max_frames,
         link_radius=args.link_radius,
+        moon_cx=args.moon_cx,
+        moon_cy=args.moon_cy,
+        moon_radius=args.moon_radius,
     )
 
 

@@ -44,6 +44,7 @@ python run_pipeline.py video.mp4 --start 2 --end 10
 
 This registers the video and detects flashes in one go. Outputs:
 - `registered.mp4` — stabilised video (moon locked to center)
+- `registered.json` — auto-detected moon geometry (center and radius), used by downstream scripts
 - `detections.mp4` — annotated video with candidate event circles
 - `events.json` — machine-readable event list
 
@@ -102,7 +103,7 @@ All other `detect_flashes.py` arguments (`--sigma-k`, `--min-area`, `--max-area`
 
 ### `register_frames.py` — Registration
 
-Two-stage registration that warps each frame so the moon sits at a fixed center (960, 540) with a fixed radius (426 px).
+Two-stage registration that warps each frame so the moon sits at the center of the frame with a fixed radius. The target center and radius are **auto-detected** from the video (center = frame midpoint, radius = median of RANSAC-fitted radii across all frames). A geometry sidecar JSON is written alongside the output video for use by downstream scripts.
 
 ```
 python register_frames.py <input> [options]
@@ -115,7 +116,7 @@ python register_frames.py <input> [options]
 | `--start` | `0.0` | Start time in seconds |
 | `--end` | `-1` | End time in seconds |
 
-**Stage 1 — Coarse (RANSAC circle fit):** Fits a circle to the lunar limb using RANSAC, which treats the terminator (the day/night boundary, which is *not* part of the geometric circle) as outliers. Detection parameters are then median-smoothed over ±5 frames to suppress per-frame fitting noise. A similarity transform (translate + uniform scale) maps the detected circle to the fixed target.
+**Stage 1 — Coarse (RANSAC circle fit):** Fits a circle to the lunar limb using RANSAC, which treats the terminator (the day/night boundary, which is *not* part of the geometric circle) as outliers. Detection parameters are then median-smoothed over ±5 frames to suppress per-frame fitting noise. A similarity transform (translate + uniform scale) maps the detected circle to the auto-computed target (frame center, median detected radius). All image-processing kernel sizes (blur, morphology, RANSAC inlier threshold) scale automatically with frame resolution.
 
 **Stage 2 — Fine (phase correlation):** After coarse alignment, residual jitter of ±1–2 px remains from seeing. Phase correlation between each coarse-registered frame and a median reference image corrects this to sub-pixel accuracy. A Hanning window is applied before the FFT to reduce spectral leakage at the crop boundary.
 
@@ -138,6 +139,9 @@ python background_subtract.py <registered_video> [options]
 | `--start` | `0.0` | Start time |
 | `--end` | `-1` | End time |
 | `--half-window` | `15` | Frames each side of current frame used for median (±0.5 s at 30 fps) |
+| `--moon-cx` | auto | Override moon center X (auto-loaded from geometry sidecar if omitted) |
+| `--moon-cy` | auto | Override moon center Y |
+| `--moon-radius` | auto | Override moon radius |
 
 The output is mapped so that background = dim purple, brighter than background = warm yellow/white, dimmer than background = dark. The green circle marks the eroded analysis mask boundary (5% inward from the detected limb).
 
@@ -168,6 +172,9 @@ python detect_flashes.py <registered_video> [options]
 | `--min-frames` | `2` | Minimum consecutive frames to count as an event (rejects single-frame cosmic rays) |
 | `--max-frames` | `30` | Maximum event duration in frames (~1 s at 30 fps) |
 | `--link-radius` | `12` | Spatial radius in pixels to link detections across frames into one event |
+| `--moon-cx` | auto | Override moon center X (auto-loaded from geometry sidecar if omitted) |
+| `--moon-cy` | auto | Override moon center Y |
+| `--moon-radius` | auto | Override moon radius |
 
 #### Threshold calibration
 
@@ -197,14 +204,14 @@ A real impact flash will be tens to hundreds of DN brighter than background, wel
     "peak_snr": 19.0,     // peak (residual / sigma) across all detections
     "start_time_s": 1.60,
     "end_time_s": 1.63,
-    "lunar_x": -102.7,    // cx - 960 (offset from moon center, px)
-    "lunar_y": -367.2,    // cy - 540
+    "lunar_x": -102.7,    // cx - moon_cx (offset from moon center, px)
+    "lunar_y": -367.2,    // cy - moon_cy
     "detections": [...]   // per-frame detail
   }
 ]
 ```
 
-`lunar_x` / `lunar_y` are in registered-frame pixels relative to the moon center (960, 540). Positive x = right (lunar east limb direction), positive y = down (lunar south limb direction).
+`lunar_x` / `lunar_y` are in registered-frame pixels relative to the auto-detected moon center. Positive x = right (lunar east limb direction), positive y = down (lunar south limb direction).
 
 ---
 
@@ -271,9 +278,8 @@ Peak RAM use is approximately **100 MB** independent of video duration.
 
 - **Seeing jitter ghosts are the dominant false positive source.** The circularity filter helps but does not fully eliminate them because small jitter blobs at compact craters can appear circular. The remaining mitigation is the `--min-residual` absolute floor.
 - **The σ estimator went through several iterations.** MAD was too robust (ignored jitter entirely). Trimmed std at 95% was better but still dominated by quiet pixels. Full std with a 1 DN floor is the current approach, but it remains imperfect — σ is still low relative to jitter peaks, making the adaptive k×σ term less useful than the hard floor.
-- **Phase correlation can produce large spurious shifts** if the moon is near the frame edge or badly saturated, because the Hanning-windowed crop includes too much black border. The PHASE_CROP_R constant (380 px vs. moon radius 426 px) gives headroom but could still fail for unusually positioned moons.
+- **Phase correlation can produce large spurious shifts** if the moon is near the frame edge or badly saturated, because the Hanning-windowed crop includes too much black border. The phase crop radius (89% of the detected moon radius) gives headroom but could still fail for unusually positioned moons.
 - **No satellite/aircraft rejection.** A bright object moving linearly across the disk over several frames would currently be detected as a long-duration event. It can be rejected manually by inspecting `detections.mp4` or automatically by adding a linearity check to the temporal clustering step.
-- **Fixed moon geometry constants** (`MOON_CX=960, MOON_CY=540, MOON_RADIUS=426`) are hardcoded based on the development video (1920×1080, moon nearly filling the frame). These must be updated if the video resolution, zoom level, or target position differs. The `register_frames.py` output already prints the detected radius to help calibrate these.
 
 ---
 

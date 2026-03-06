@@ -13,17 +13,16 @@ Usage:
 """
 
 import argparse
+import json
+import os
 import sys
 import cv2
 import numpy as np
 from tqdm import tqdm
 
-TARGET_CX = 960
-TARGET_CY = 540
-TARGET_RADIUS = 426
-
-# Crop radius used for phase correlation (smaller than moon to avoid black borders)
-PHASE_CROP_R = 380
+# Phase correlation crop as a fraction of target radius
+# (smaller than full radius to avoid black borders at the limb)
+PHASE_CROP_RATIO = 0.89
 
 # Number of frames to build the reference image from
 REFERENCE_FRAMES = 30
@@ -103,10 +102,17 @@ def detect_moon_coarse(frame: np.ndarray):
     Returns (cx, cy, radius) or None.
     """
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    blurred = cv2.GaussianBlur(gray, (61, 61), 0)
+
+    # Scale kernel sizes with frame dimensions (calibrated at 1080p)
+    short = min(frame.shape[:2])
+    blur_k = max(3, int(short * 0.057) | 1)     # ~61 at 1080p
+    morph_k = max(3, int(short * 0.014) | 1)     # ~15 at 1080p
+    inlier_px = max(1.0, short * 0.003)           # ~3.0 px at 1080p
+
+    blurred = cv2.GaussianBlur(gray, (blur_k, blur_k), 0)
     _, binary = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
 
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15))
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (morph_k, morph_k))
     binary = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel)
 
     contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
@@ -117,14 +123,15 @@ def detect_moon_coarse(frame: np.ndarray):
     if cv2.contourArea(largest) < frame.shape[0] * frame.shape[1] * 0.01:
         return None
 
-    cx, cy, radius = fit_circle_ransac(largest)
+    cx, cy, radius = fit_circle_ransac(largest, inlier_thresh=inlier_px)
     return cx, cy, radius
 
 
-def coarse_warp(frame: np.ndarray, cx: float, cy: float, radius: float) -> np.ndarray:
-    scale = TARGET_RADIUS / radius
-    tx = TARGET_CX - cx * scale
-    ty = TARGET_CY - cy * scale
+def coarse_warp(frame: np.ndarray, cx: float, cy: float, radius: float,
+                target_cx: int, target_cy: int, target_radius: int) -> np.ndarray:
+    scale = target_radius / radius
+    tx = target_cx - cx * scale
+    ty = target_cy - cy * scale
     M = np.array([[scale, 0, tx], [0, scale, ty]], dtype=np.float32)
     h, w = frame.shape[:2]
     return cv2.warpAffine(frame, M, (w, h),
@@ -133,13 +140,14 @@ def coarse_warp(frame: np.ndarray, cx: float, cy: float, radius: float) -> np.nd
                           borderValue=0)
 
 
-def extract_moon_crop(gray: np.ndarray) -> np.ndarray:
+def extract_moon_crop(gray: np.ndarray, target_cx: int, target_cy: int,
+                      phase_crop_r: int) -> np.ndarray:
     """Extract a square crop centred on the moon for phase correlation."""
-    r = PHASE_CROP_R
-    y0 = TARGET_CY - r
-    y1 = TARGET_CY + r
-    x0 = TARGET_CX - r
-    x1 = TARGET_CX + r
+    r = phase_crop_r
+    y0 = target_cy - r
+    y1 = target_cy + r
+    x0 = target_cx - r
+    x1 = target_cx + r
     return gray[y0:y1, x0:x1].astype(np.float32)
 
 
@@ -244,6 +252,19 @@ def process_video(
     print(f"Smoothing window: {kernel} frames ({SMOOTH_HALF/fps*1000:.0f} ms each side)")
     print(f"Smoothed radius: mean={rs.mean():.1f}  std={rs.std():.2f}")
 
+    # Compute target geometry from video dimensions and detected moon size
+    target_cx = width // 2
+    target_cy = height // 2
+    valid_rs = rs[np.array(valid_mask)]
+    if len(valid_rs) == 0:
+        sys.exit("Could not detect the moon in any frame.")
+    target_radius = int(np.median(valid_rs))
+    phase_crop_r = int(target_radius * PHASE_CROP_RATIO)
+    # Ensure crop fits within frame
+    phase_crop_r = min(phase_crop_r, target_cx, target_cy)
+    print(f"Target: center=({target_cx}, {target_cy}), radius={target_radius}, "
+          f"phase_crop_r={phase_crop_r}")
+
     # ------------------------------------------------------------------ #
     # Pass 2: build phase-correlation reference  (first 30 valid frames)#
     # ------------------------------------------------------------------ #
@@ -257,9 +278,10 @@ def process_video(
             break
         if not valid_mask[i]:
             continue
-        warped = coarse_warp(frame, cxs[i], cys[i], rs[i])
+        warped = coarse_warp(frame, cxs[i], cys[i], rs[i],
+                             target_cx, target_cy, target_radius)
         gray   = cv2.cvtColor(warped, cv2.COLOR_BGR2GRAY)
-        ref_crops.append(extract_moon_crop(gray))
+        ref_crops.append(extract_moon_crop(gray, target_cx, target_cy, phase_crop_r))
         if len(ref_crops) >= REFERENCE_FRAMES:
             break
 
@@ -286,9 +308,10 @@ def process_video(
             break
 
         if valid_mask[i]:
-            warped     = coarse_warp(frame, cxs[i], cys[i], rs[i])
+            warped     = coarse_warp(frame, cxs[i], cys[i], rs[i],
+                                     target_cx, target_cy, target_radius)
             gray       = cv2.cvtColor(warped, cv2.COLOR_BGR2GRAY)
-            crop       = extract_moon_crop(gray)
+            crop       = extract_moon_crop(gray, target_cx, target_cy, phase_crop_r)
             dx, dy     = phase_fine_shift(crop, reference_crop)
             frame_out  = apply_translation(warped, dx, dy)
         else:
@@ -297,7 +320,7 @@ def process_video(
 
         fine_shifts.append((dx, dy))
 
-        cv2.circle(frame_out, (TARGET_CX, TARGET_CY), TARGET_RADIUS, (0, 255, 0), 1)
+        cv2.circle(frame_out, (target_cx, target_cy), target_radius, (0, 255, 0), 1)
         frame_idx = start_frame + i
         ts = frame_idx / fps
         cv2.putText(frame_out,
@@ -316,11 +339,21 @@ def process_video(
           f"range=[{shifts[:,1].min():+.2f}, {shifts[:,1].max():+.2f}]")
     print(f"Output saved to: {output_path}")
 
+    # Write geometry sidecar for downstream scripts
+    sidecar_path = os.path.splitext(output_path)[0] + ".json"
+    with open(sidecar_path, "w") as f:
+        json.dump({
+            "moon_cx": target_cx,
+            "moon_cy": target_cy,
+            "moon_radius": target_radius,
+        }, f, indent=2)
+    print(f"Geometry: {sidecar_path}")
+
 
 def main():
     parser = argparse.ArgumentParser(description="Improved frame registration v2")
     parser.add_argument("input")
-    parser.add_argument("--output", default="registered_v2.mp4")
+    parser.add_argument("--output", default="registered.mp4")
     parser.add_argument("--start", type=float, default=0.0)
     parser.add_argument("--end",   type=float, default=-1.0)
     args = parser.parse_args()
