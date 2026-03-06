@@ -40,6 +40,8 @@ pip install -r requirements.txt
 python run_pipeline.py video.mp4 --start 2 --end 10
 ```
 
+`--start` and `--end` trim the video to a time range in seconds (here, 2 s to 10 s). This is useful for skipping shaky intro footage or processing only a segment of interest. Omit both to process the entire video.
+
 This registers the video and detects flashes in one go. Outputs:
 - `registered.mp4` — stabilised video (moon locked to center)
 - `detections.mp4` — annotated video with candidate event circles
@@ -51,19 +53,22 @@ To lower the detection threshold and see more candidates:
 python run_pipeline.py video.mp4 --start 2 --end 10 --min-residual 20
 ```
 
+Optionally, generate a compact review video with zoomed-in clips of each detected event:
+
+```bash
+python make_events_video.py
+```
+
 ### Run steps individually (for debugging / tuning)
 
 ```bash
-# Step 1 — verify moon detection on a short clip
-python detect_moon.py video.mp4 --start 2 --end 10 --output moon_detected.mp4
-
-# Step 2 — register frames (stabilise the moon)
+# Step 1 — register frames (stabilise the moon)
 python register_frames.py video.mp4 --start 2 --end 10 --output registered.mp4
 
-# Step 3 (optional diagnostic) — inspect the residual signal
+# Step 2 (optional diagnostic) — inspect the residual signal
 python background_subtract.py registered.mp4 --output residual.mp4
 
-# Step 4 — detect flashes
+# Step 3 — detect flashes
 python detect_flashes.py registered.mp4 --output detections.mp4 --events events.json
 ```
 
@@ -75,7 +80,7 @@ Open each output video to verify the stage before proceeding to the next.
 
 ### `run_pipeline.py` — Full pipeline
 
-Chains registration (step 2) and flash detection (step 4) into a single command.
+Chains registration and flash detection into a single command.
 
 ```
 python run_pipeline.py <input> [options]
@@ -95,26 +100,7 @@ All other `detect_flashes.py` arguments (`--sigma-k`, `--min-area`, `--max-area`
 
 ---
 
-### `detect_moon.py` — Step 1
-
-Detects the moon's center and radius in each frame and writes an annotated video.
-
-```
-python detect_moon.py <input> [options]
-```
-
-| Argument | Default | Description |
-|---|---|---|
-| `input` | — | Input video file |
-| `--output` | `moon_detected.mp4` | Annotated output video |
-| `--start` | `0.0` | Start time in seconds |
-| `--end` | `-1` | End time in seconds (`-1` = until end) |
-
-**What to check:** The green circle should sit on or slightly outside the lunar limb in every frame. A slightly over-large circle is fine — it gives margin for the eroded analysis mask used later. "NO MOON" frames are expected when the moon is off-screen.
-
----
-
-### `register_frames.py` — Step 2
+### `register_frames.py` — Registration
 
 Two-stage registration that warps each frame so the moon sits at a fixed center (960, 540) with a fixed radius (426 px).
 
@@ -137,7 +123,7 @@ python register_frames.py <input> [options]
 
 ---
 
-### `background_subtract.py` — Step 3 (diagnostic)
+### `background_subtract.py` — Background subtraction (diagnostic)
 
 Computes the temporal median background and displays the signed residual as a false-colour video. Useful for understanding the noise floor before tuning the detector.
 
@@ -159,7 +145,7 @@ The output is mapped so that background = dim purple, brighter than background =
 
 ---
 
-### `detect_flashes.py` — Step 4
+### `detect_flashes.py` — Flash detection
 
 The main detector. Reads the registered video, computes the same temporal median background internally, and outputs an annotated video and a JSON event list.
 
