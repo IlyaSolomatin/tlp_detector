@@ -250,6 +250,24 @@ A real impact flash will be tens to hundreds of DN brighter than background, wel
 
 ---
 
+### `make_events_video.py` — Event review
+
+Post-processing utility that builds a compact review video from the pipeline output. For each event in `events.json`, it extracts a zoomed-in, time-padded clip from `detections.mp4` with a title card, then concatenates all clips into one video for easy triage.
+
+```
+python make_events_video.py [options]
+```
+
+| Argument | Default | Description |
+|---|---|---|
+| `--events` | `events.json` | Events JSON (output of pipeline) |
+| `--input` | `detections.mp4` | Annotated video (output of pipeline) |
+| `--output` | `review.mp4` | Concatenated review video |
+| `--pad` | `2.0` | Seconds of context before/after each event |
+| `--zoom` | `10` | Zoom factor for the crop around the event |
+
+---
+
 ## Key Design Choices and Motivation
 
 ### Why temporal median for background?
