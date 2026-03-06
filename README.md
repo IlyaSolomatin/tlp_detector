@@ -28,39 +28,11 @@ The pipeline does **not** currently handle:
 
 ---
 
-## Pipeline Overview
-
-```
-Raw video
-    │
-    ▼
-[1] detect_moon.py       — find lunar disk (center, radius) per frame
-    │
-    ▼
-[2] register_frames.py   — warp frames to fixed moon position (moon-space)
-    │
-    ▼
-[3] background_subtract.py  — (diagnostic) visualise temporal median residual
-    │
-    ▼
-[4] detect_flashes.py    — threshold residuals, filter, cluster → events.json
-```
-
-Steps 3 and 4 both compute the same temporal median background internally. Step 3 is a standalone diagnostic tool; Step 4 is the actual detector. In normal use you run 1 → 2 → 4. Run step 3 only when you want to visually inspect the residual signal.
-
----
-
-## Installation
+## Quick Start
 
 ```bash
-pip install opencv-python numpy tqdm
+pip install -r requirements.txt
 ```
-
-Tested with Python 3.10, OpenCV 4.13, NumPy 2.x.
-
----
-
-## Quick Start
 
 ### Run the full pipeline in one command
 
