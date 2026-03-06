@@ -20,6 +20,14 @@ The pipeline does **not** currently handle:
 
 ---
 
+## Demo
+
+| Raw video | Stabilised (moon-locked) | TLP detection |
+|:-:|:-:|:-:|
+| ![Raw video](1.png) | ![Stabilised](2.png) | ![Detection](3.png) |
+
+---
+
 ## Pipeline Overview
 
 ```
