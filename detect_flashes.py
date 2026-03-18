@@ -238,6 +238,8 @@ def process(
     moon_cy: int | None = None,
     moon_radius: int | None = None,
 ) -> list[Event]:
+    if not os.path.isfile(input_path):
+        sys.exit(f"Input file not found: {input_path}")
     # Resolve moon geometry
     if moon_cx is None or moon_cy is None or moon_radius is None:
         moon_cx, moon_cy, moon_radius = load_geometry(input_path)

@@ -16,6 +16,8 @@ Usage:
 
 import argparse
 import json
+import os
+import sys
 import cv2
 import numpy as np
 from tqdm import tqdm
@@ -79,6 +81,8 @@ def process(
         print("No events in JSON — nothing to render.")
         return
 
+    if not os.path.isfile(input_path):
+        sys.exit(f"Input file not found: {input_path}")
     cap = cv2.VideoCapture(input_path)
     fps        = cap.get(cv2.CAP_PROP_FPS)
     total      = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))

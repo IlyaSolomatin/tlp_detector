@@ -184,6 +184,8 @@ def process_video(
     start_sec: float,
     end_sec: float,
 ) -> None:
+    if not os.path.isfile(input_path):
+        sys.exit(f"Input file not found: {input_path}")
     cap = cv2.VideoCapture(input_path)
     if not cap.isOpened():
         sys.exit(f"Cannot open: {input_path}")

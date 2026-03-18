@@ -104,6 +104,8 @@ def process(
     if moon_cx is None or moon_cy is None or moon_radius is None:
         moon_cx, moon_cy, moon_radius = load_geometry(input_path)
     mask_radius = int(moon_radius * MASK_EROSION)
+    if not os.path.isfile(input_path):
+        sys.exit(f"Input file not found: {input_path}")
     print(f"Moon geometry: center=({moon_cx}, {moon_cy}), "
           f"radius={moon_radius}, mask_radius={mask_radius}")
 

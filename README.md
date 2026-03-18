@@ -30,6 +30,8 @@ The pipeline does **not** currently handle:
 
 ## Quick Start
 
+Requires **Python 3.10+**.
+
 ```bash
 pip install -r requirements.txt
 ```
